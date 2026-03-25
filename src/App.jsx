@@ -110,72 +110,217 @@ function simulateDrop(board, col, token) {
   return { next, row }
 }
 
+function randomChoice(items) {
+  return items[Math.floor(Math.random() * items.length)]
+}
+
 /**
  * @param {Cell[][]} board
  * @param {'R' | 'Y'} token
- * @returns {number | null}
+ * @returns {number[]} columns that would win immediately for `token`
  */
-function findImmediateWin(board, token) {
+function getWinningMoves(board, token) {
+  const winning = []
   const playable = getPlayableColumns(board)
   for (const col of playable) {
     const sim = simulateDrop(board, col, token)
-    if (sim && isWinningMove(sim.next, sim.row, col, token)) return col
+    if (sim && isWinningMove(sim.next, sim.row, col, token)) winning.push(col)
   }
-  return null
+  return winning
 }
 
-function randomChoice(items) {
-  return items[Math.floor(Math.random() * items.length)]
+function otherToken(token) {
+  return token === 'R' ? 'Y' : 'R'
+}
+
+/**
+ * Heuristic evaluation: positive favors 'Y' (AI), negative favors 'R' (human).
+ * @param {Cell[][]} b
+ */
+function evaluateBoard(b) {
+  const AI = 'Y'
+  const HUMAN = 'R'
+
+  const scoreForCount = (count, who) => {
+    if (who === AI) {
+      if (count === 1) return 1
+      if (count === 2) return 10
+      if (count === 3) return 50
+      return 0
+    }
+    // HUMAN
+    if (count === 1) return -1
+    if (count === 2) return -10
+    if (count === 3) return -50
+    return 0
+  }
+
+  let score = 0
+
+  // Center column preference (helps both play strength and symmetry breaking).
+  const centerCol = Math.floor(COLS / 2)
+  for (let r = 0; r < ROWS; r += 1) {
+    const cell = b[r][centerCol]
+    if (cell === AI) score += 3
+    if (cell === HUMAN) score -= 3
+  }
+
+  // Score all 4-cell windows.
+  const addWindowScore = (cells) => {
+    const countAI = cells.filter((x) => x === AI).length
+    const countH = cells.filter((x) => x === HUMAN).length
+    const empty = cells.filter((x) => x === null).length
+
+    // Mixed windows are neutral.
+    if (countAI > 0 && countH > 0) return
+    if (countAI === 0 && countH === 0) return
+    if (empty === 4) return
+
+    if (countAI > 0) score += scoreForCount(countAI, AI)
+    if (countH > 0) score += scoreForCount(countH, HUMAN)
+  }
+
+  // Horizontal windows
+  for (let r = 0; r < ROWS; r += 1) {
+    for (let c = 0; c <= COLS - 4; c += 1) {
+      addWindowScore([b[r][c], b[r][c + 1], b[r][c + 2], b[r][c + 3]])
+    }
+  }
+  // Vertical windows
+  for (let r = 0; r <= ROWS - 4; r += 1) {
+    for (let c = 0; c < COLS; c += 1) {
+      addWindowScore([b[r][c], b[r + 1][c], b[r + 2][c], b[r + 3][c]])
+    }
+  }
+  // Diagonal down-right windows
+  for (let r = 0; r <= ROWS - 4; r += 1) {
+    for (let c = 0; c <= COLS - 4; c += 1) {
+      addWindowScore([b[r][c], b[r + 1][c + 1], b[r + 2][c + 2], b[r + 3][c + 3]])
+    }
+  }
+  // Diagonal down-left windows
+  for (let r = 0; r <= ROWS - 4; r += 1) {
+    for (let c = 3; c < COLS; c += 1) {
+      addWindowScore([b[r][c], b[r + 1][c - 1], b[r + 2][c - 2], b[r + 3][c - 3]])
+    }
+  }
+
+  return score
+}
+
+/**
+ * @param {Cell[][]} b
+ * @param {number} depth
+ * @param {number} alpha
+ * @param {number} beta
+ * @param {'R' | 'Y'} tokenToMove
+ * @returns {number}
+ */
+function minimax(b, depth, alpha, beta, tokenToMove) {
+  if (depth === 0 || isBoardFull(b)) return evaluateBoard(b)
+
+  const maximizing = tokenToMove === 'Y'
+  const playable = getPlayableColumns(b)
+  if (!playable.length) return evaluateBoard(b)
+
+  if (maximizing) {
+    let best = -Infinity
+    for (const col of playable) {
+      const sim = simulateDrop(b, col, tokenToMove)
+      if (!sim) continue
+      if (isWinningMove(sim.next, sim.row, col, tokenToMove)) {
+        // Encourage quicker wins.
+        best = Math.max(best, 100000 + depth)
+        alpha = Math.max(alpha, best)
+        if (alpha >= beta) break
+        continue
+      }
+      const val = minimax(sim.next, depth - 1, alpha, beta, otherToken(tokenToMove))
+      best = Math.max(best, val)
+      alpha = Math.max(alpha, best)
+      if (alpha >= beta) break
+    }
+    return best
+  }
+
+  let best = Infinity
+  for (const col of playable) {
+    const sim = simulateDrop(b, col, tokenToMove)
+    if (!sim) continue
+    if (isWinningMove(sim.next, sim.row, col, tokenToMove)) {
+      best = Math.min(best, -100000 - depth)
+      beta = Math.min(beta, best)
+      if (alpha >= beta) break
+      continue
+    }
+    const val = minimax(sim.next, depth - 1, alpha, beta, otherToken(tokenToMove))
+    best = Math.min(best, val)
+    beta = Math.min(beta, best)
+    if (alpha >= beta) break
+  }
+  return best
 }
 
 function chooseAIMove(board, difficulty) {
   const playable = getPlayableColumns(board)
   if (!playable.length) return null
 
-  // Always take a winning move immediately.
-  const winning = findImmediateWin(board, 'Y')
-  if (winning !== null) return winning
+  const aiWinningMoves = getWinningMoves(board, 'Y')
+  if (aiWinningMoves.length) {
+    return randomChoice(aiWinningMoves)
+  }
+
+  // If opponent has an immediate win, decide whether to block it.
+  const oppWinningMoves = getWinningMoves(board, 'R')
+  const hasImmediateThreat = oppWinningMoves.length > 0
 
   if (difficulty === 'easy') {
     return randomChoice(playable)
   }
 
-  // Medium/Hard both block immediate player wins.
-  const block = findImmediateWin(board, 'R')
-  if (block !== null) return block
-
-  const centerBias = [3, 2, 4, 1, 5, 0, 6].filter((c) => playable.includes(c))
+  // Medium: only win in 1 move, or block an opponent 1-move win.
   if (difficulty === 'medium') {
-    return randomChoice(centerBias.slice(0, Math.min(3, centerBias.length)))
+    if (!hasImmediateThreat) return randomChoice(playable)
+
+    const blockingMoves = playable.filter((col) => {
+      const sim = simulateDrop(board, col, 'Y')
+      if (!sim) return false
+      return getWinningMoves(sim.next, 'R').length === 0
+    })
+
+    if (blockingMoves.length) return randomChoice(blockingMoves)
+    // If no move fully blocks, fall back to random (rare).
+    return randomChoice(playable)
   }
 
-  // Hard: simple heuristic search (one ply lookahead + center weighting).
-  let bestCol = playable[0]
-  let bestScore = -Infinity
-  for (const col of playable) {
-    const first = simulateDrop(board, col, 'Y')
-    if (!first) continue
-    let score = 10 - Math.abs(3 - col) * 1.25
-
-    // Prefer setups that create immediate future wins.
-    if (findImmediateWin(first.next, 'Y') !== null) score += 18
-
-    // Avoid moves that allow immediate player wins.
-    const oppPlayable = getPlayableColumns(first.next)
-    for (const oppCol of oppPlayable) {
-      const reply = simulateDrop(first.next, oppCol, 'R')
-      if (reply && isWinningMove(reply.next, reply.row, oppCol, 'R')) {
-        score -= 22
-      }
+  // Hard: immediate win / prevention take precedence, otherwise minimax.
+  if (difficulty === 'hard') {
+    if (hasImmediateThreat) {
+      const blockingMoves = playable.filter((col) => {
+        const sim = simulateDrop(board, col, 'Y')
+        if (!sim) return false
+        return getWinningMoves(sim.next, 'R').length === 0
+      })
+      if (blockingMoves.length) return randomChoice(blockingMoves)
+      return randomChoice(playable)
     }
 
-    if (score > bestScore) {
-      bestScore = score
-      bestCol = col
+    const HARD_DEPTH = 4
+    const scored = []
+    for (const col of playable) {
+      const sim = simulateDrop(board, col, 'Y')
+      if (!sim) continue
+      // Immediate wins already handled above.
+      const score = minimax(sim.next, HARD_DEPTH - 1, -Infinity, Infinity, 'R')
+      scored.push({ col, score })
     }
+    scored.sort((a, b) => b.score - a.score)
+    const top = scored.slice(0, Math.min(2, scored.length))
+    return randomChoice(top.map((x) => x.col))
   }
 
-  return bestCol
+  // Shouldn't happen, but keeps behavior defined.
+  return randomChoice(playable)
 }
 
 function App() {
@@ -212,22 +357,25 @@ function App() {
         : `Drop a piece: ${tokenMeta[currentToken].name}`
 
   useEffect(() => {
-    if (!isAITurn || aiThinking) return
+    if (!isAITurn) return
 
     setAiThinking(true)
+
+    const delay = difficulty === 'easy' ? 80 : difficulty === 'medium' ? 220 : 420
+
     const timeoutId = setTimeout(() => {
       const col = chooseAIMove(board, difficulty)
       if (col !== null) {
         dropInColumn(col)
       }
       setAiThinking(false)
-    }, 520)
+    }, delay)
 
     return () => {
       clearTimeout(timeoutId)
       setAiThinking(false)
     }
-  }, [isAITurn, aiThinking, board, difficulty])
+  }, [isAITurn, board, difficulty])
 
   function resetGame() {
     setBoard(createEmptyBoard())
@@ -247,7 +395,7 @@ function App() {
   }
 
   function dropInColumn(col) {
-    if (winner || isDraw || aiThinking) return
+    if (winner || isDraw) return
     const row = findNextOpenRow(board, col)
     if (row < 0) return
 
